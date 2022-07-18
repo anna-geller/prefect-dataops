@@ -1,4 +1,4 @@
-name: Create ECS Cluster, deploy Prefect agent as an ECS service
+name: Create AWS EKS Cluster, deploy Prefect agent
 
 on:
   workflow_dispatch:
