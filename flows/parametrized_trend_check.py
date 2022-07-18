@@ -1,6 +1,6 @@
 import requests
 from prefect import task, flow, get_run_logger
-from prefect_dataops.deployments import deploy_to_s3
+from prefect_dataops.deployments import deploy_to_kubernetes
 
 
 @task
@@ -21,8 +21,13 @@ def check_trending_repos(
     return check_if_trending(content, repo)
 
 
-deploy_to_s3(check_trending_repos)
-deploy_to_s3(check_trending_repos, parameters=dict(repo="keras"), name="keras")
+deploy_to_kubernetes(flow=check_trending_repos)
+deploy_to_kubernetes(
+    flow=check_trending_repos, parameters=dict(repo="keras"), name="keras"
+)
+
+# deploy_to_s3(check_trending_repos)
+# deploy_to_s3(check_trending_repos, parameters=dict(repo="keras"), name="keras")
 
 
 if __name__ == "__main__":

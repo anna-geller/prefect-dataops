@@ -1,0 +1,182 @@
+name: Create ECS Cluster, deploy Prefect agent as an ECS service
+
+on:
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: Number of nodes for the AWS EKS cluster
+        required: true
+        default: '1'
+        type: string
+      instance-type:
+        description: EC2 instance type for worker nodes
+        required: true
+        default: 'm5.large'
+        type: string
+      namespace:  # K8s namespace to which to deploy your agent = env = work-queue tag
+        description: Namespace to which to deploy your agent
+        required: true
+        default: 'prod'
+        type: string
+      image:
+        description: Prefect base image for your agent
+        required: true
+        default: 'prefecthq/prefect:2.0b8-python3.9'
+        type: string
+      work-queue:
+        description: Create a work-queue?
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+env:
+  EKS_CLUSTER: prefect
+  NAMESPACE_ENV: ${{github.event.inputs.namespace}}
+  K8_SECRET_NAME: prefect-secrets
+
+jobs:
+  create-work-queue:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.work-queue == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v3
+        with:
+          python-version: 3.9
+
+      - name: Python dependencies
+        run: pip install -U "prefect>=2.0b"
+
+      - name: Prefect Cloud login
+        run: |
+          prefect config set PREFECT_API_KEY=${{secrets.PREFECT_API_KEY}} 
+          prefect config set PREFECT_API_URL=${{secrets.PREFECT_API_URL}}
+
+      - name: Create a project work-queue
+        run: prefect work-queue create ${{env.NAMESPACE_ENV}} -t ${{env.NAMESPACE_ENV}}
+        continue-on-error: true  # work-queue can be created manually later
+
+  prefect-agent-eks:
+    name: EKS cluster & Prefect agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Install eksctl
+        run: |
+          brew tap weaveworks/tap
+          brew install weaveworks/tap/eksctl
+          echo "ekctl istalled with version: $(eksctl version)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create AWS resources incl. EKS cluster
+        run: |
+          eksctl create cluster -f - << EOF
+          ---
+          apiVersion: eksctl.io/v1alpha5
+          kind: ClusterConfig
+          
+          metadata:
+            name: ${{env.EKS_CLUSTER}}
+            region: ${{ secrets.AWS_DEFAULT_REGION }}
+          
+          iam:
+            withOIDC: true
+          
+          managedNodeGroups:
+            - name: prefect-ng-1
+              amiFamily: AmazonLinux2
+              instanceType: ${{github.event.inputs.instance-type}}
+              desiredCapacity: ${{github.event.inputs.nodes}}
+              maxSize: 1
+              minSize: 1
+              iam:
+                attachPolicy:
+                  Version: 2012-10-17
+                  Statement:
+                    - Effect: Allow
+                      Action:
+                        - "s3:*"
+                        - "glue:*"
+                        - "athena:*"
+                      Resource: "*"
+          EOF
+
+      - name: Create Kubernetes resources
+        run: |
+          kubectl create namespace ${{env.NAMESPACE_ENV}}
+          kubectl config set-context --current --namespace=${{env.NAMESPACE_ENV}}
+          kubectl create secret generic ${{env.K8_SECRET_NAME}} --from-literal=api-key=${{secrets.PREFECT_API_KEY}} --from-literal=api-url=${{secrets.PREFECT_API_URL}}
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: agent
+            namespace: ${{env.NAMESPACE_ENV}}
+          spec:
+            selector:
+              matchLabels:
+                app: agent
+            replicas: 1
+            template:
+              metadata:
+                labels:
+                  app: agent
+              spec:
+                containers:
+                  - name: agent
+                    image: ${{github.event.inputs.image}}
+                    command: ["prefect", "agent", "start", "${{env.NAMESPACE_ENV}}"]
+                    imagePullPolicy: "IfNotPresent"
+                    env:
+                      - name: PREFECT_API_URL
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${{env.K8_SECRET_NAME}}
+                            key: api-url
+                      - name: PREFECT_API_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: ${{env.K8_SECRET_NAME}}
+                            key: api-key
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: agent
+            namespace: ${{env.NAMESPACE_ENV}}
+          rules:
+            - apiGroups: [""]
+              resources: ["pods", "pods/log", "pods/status"]
+              verbs: ["get", "watch", "list"]
+            - apiGroups: ["batch"]
+              resources: ["jobs"]
+              verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: agent
+            namespace: ${{env.NAMESPACE_ENV}}
+          subjects:
+            - kind: ServiceAccount
+              name: default
+              namespace: ${{env.NAMESPACE_ENV}}
+          roleRef:
+            kind: Role
+            name: agent
+            apiGroup: rbac.authorization.k8s.io
+          EOF
+
+      - name: Summary
+        run: echo '### AWS EKS cluster with a Prefect agent successfully deployed! :rocket:' >> $GITHUB_STEP_SUMMARY

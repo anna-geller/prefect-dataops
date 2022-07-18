@@ -1,0 +1,29 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: prefect2
+  region: us-east-1
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: prefect-ng-1
+    amiFamily: AmazonLinux2
+    instanceType: m5.large # 2vCPU, 8GiB memory with Intel Xeon Platinum 8175M processors
+    desiredCapacity: 1
+    maxSize: 1
+    minSize: 1
+    iam:
+      attachPolicy: # inline policy can be defined along with `attachPolicyARNs`
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - "s3:*"
+              - "glue:*"
+              - "athena:*"
+            Resource: "*"
+#    volumeSize: 80 # default uses 80 GB EBS volume attached to the instance
+#    volumeType: gp3 # the latest General Purpose SSD EBS volume

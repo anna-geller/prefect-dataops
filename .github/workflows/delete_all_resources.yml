@@ -1,10 +1,10 @@
-name: Delete ECS Cluster, Prefect agent and ECR repository
+name: Delete AWS EKS Cluster
 
 on:
   workflow_dispatch:
 
 env:
-  PROJECT: prefectdataops
+  EKS_CLUSTER: prefect
 
 jobs:
   delete-stack:
@@ -20,15 +20,12 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
 
-      - name: Delete ECR repository
-        continue-on-error: true
+      - name: Install eksctl
         run: |
-          aws ecr delete-repository --repository-name ${{ env.PROJECT }} --force
-          aws cloudformation delete-stack --stack-name "${{ env.PROJECT }}-ecr"
+          brew tap weaveworks/tap
+          brew install weaveworks/tap/eksctl
+          echo "ekctl istalled with version: $(eksctl version)" >> $GITHUB_STEP_SUMMARY
 
-      - name: Delete ECS agent service
-        continue-on-error: true
-        run: aws cloudformation delete-stack --stack-name ${{ env.PROJECT }}
-
-      - name: All AWS resources deleted
-        run: echo '### All AWS resources deleted! :tada:' >> $GITHUB_STEP_SUMMARY
+      - name: Delete EKS cluster
+        run: eksctl delete cluster --name ${{env.EKS_CLUSTER}}
+  # or: eksctl delete cluster -f infrastructure/cluster.yml
